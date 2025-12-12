@@ -1,134 +1,185 @@
-import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting } from 'obsidian';
+import { App, Plugin, PluginSettingTab, Setting, WorkspaceLeaf, TFile, Notice } from 'obsidian';
+import { ReviewView, VIEW_TYPE_REVIEW } from './View';
+import { AnkiScheduler, Card, Rating } from './sr-algorithm';
 
-interface MyPluginSettings {
-	mySetting: string;
+interface PluginSettings {
+    targetFolder: string;
+    reviewHistory: { [date: string]: number };
 }
 
-const DEFAULT_SETTINGS: MyPluginSettings = {
-	mySetting: 'default'
+const DEFAULT_SETTINGS: PluginSettings = {
+    targetFolder: 'Study Notes',
+    reviewHistory: {}
+};
+
+export default class SpacedRepetitionPlugin extends Plugin {
+    settings: PluginSettings;
+    view: ReviewView;
+    scheduler: AnkiScheduler;
+
+    async onload() {
+        await this.loadSettings();
+        this.scheduler = new AnkiScheduler();
+
+        this.addSettingTab(new SpacedRepetitionSettingTab(this.app, this));
+
+        this.registerView(
+            VIEW_TYPE_REVIEW,
+            (leaf) => (this.view = new ReviewView(leaf, this))
+        );
+
+        this.addRibbonIcon('calendar-check', 'Open Review List', () => {
+            this.activateView();
+        });
+
+        // Commands
+        this.addCommand({ id: 'rate-again', name: 'Rate: Again', callback: () => this.rateActiveNote('Again') });
+        this.addCommand({ id: 'rate-hard', name: 'Rate: Hard', callback: () => this.rateActiveNote('Hard') });
+        this.addCommand({ id: 'rate-good', name: 'Rate: Good', callback: () => this.rateActiveNote('Good') });
+        this.addCommand({ id: 'rate-easy', name: 'Rate: Easy', callback: () => this.rateActiveNote('Easy') });
+
+        this.registerEvent(this.app.vault.on('create', (file) => {
+            if (file instanceof TFile && file.path.startsWith(this.settings.targetFolder)) {
+                this.initFile(file);
+            }
+        }));
+
+        this.registerEvent(this.app.metadataCache.on('changed', (file) => {
+            this.handleMetadataChange(file);
+        }));
+    }
+
+    async handleMetadataChange(file: TFile) {
+        if (!file.path.startsWith(this.settings.targetFolder)) return;
+        const fm = this.app.metadataCache.getFileCache(file)?.frontmatter;
+        if (!fm || !fm.State) return;
+
+        let stateValue = "";
+        if (Array.isArray(fm.State)) {
+            stateValue = fm.State[0] ? String(fm.State[0]).toLowerCase() : "";
+        } else {
+            stateValue = String(fm.State).toLowerCase();
+        }
+
+        let rating: Rating | null = null;
+        if (stateValue === 'again' || stateValue === 'fail') rating = 'Again';
+        else if (stateValue === 'hard') rating = 'Hard';
+        else if (stateValue === 'good' || stateValue === 'medium') rating = 'Good';
+        else if (stateValue === 'easy') rating = 'Easy';
+
+        if (rating) {
+            await this.processReview(file, rating);
+        }
+    }
+
+    async rateActiveNote(rating: Rating) {
+        const file = this.app.workspace.getActiveFile();
+        if (!file) return;
+        await this.processReview(file, rating);
+    }
+
+    async startReviewSession(file: TFile) {
+        const fm = this.app.metadataCache.getFileCache(file)?.frontmatter;
+        if (fm && (fm.State === 'New' || !fm.State)) {
+             await this.app.fileManager.processFrontMatter(file, (editFm) => {
+                editFm['State'] = 'Learning';
+                editFm['anki_hidden_state'] = 'Learning';
+                if (!editFm['anki_due']) editFm['anki_due'] = new Date().toISOString();
+                editFm['anki_interval'] = 0;
+                editFm['anki_step'] = 0;
+            });
+            if (this.view) this.view.refreshListOnly();
+        }
+    }
+
+    async processReview(file: TFile, rating: Rating) {
+        await this.app.fileManager.processFrontMatter(file, (fm) => {
+            const card: Card = {
+                id: file.path,
+                state: this.isValidState(fm['anki_hidden_state']) ? fm['anki_hidden_state'] : 'Review',
+                interval: fm['anki_interval'] || 0,
+                easeFactor: fm['anki_ease'] || 2.5,
+                stepIndex: fm['anki_step'] || 0,
+                dueDate: fm['anki_due'] ? new Date(fm['anki_due']) : new Date()
+            };
+
+            if (card.interval === 0 && card.stepIndex === 0 && card.state === 'Review') card.state = 'New';
+
+            const nextCard = this.scheduler.schedule(card, rating);
+
+            fm['State'] = nextCard.state; 
+            fm['anki_hidden_state'] = nextCard.state; 
+            fm['anki_interval'] = nextCard.interval;
+            fm['anki_ease'] = nextCard.easeFactor;
+            fm['anki_step'] = nextCard.stepIndex;
+            fm['anki_due'] = nextCard.dueDate.toISOString();
+        });
+
+        if (rating !== 'Again') {
+            const todayStr = window.moment().format("YYYY-MM-DD");
+            this.settings.reviewHistory[todayStr] = (this.settings.reviewHistory[todayStr] || 0) + 1;
+            await this.saveSettings();
+        }
+
+        new Notice(`Reviewed: ${rating}`);
+
+        // --- AUTO-ADVANCE & CLOSE ---
+        if (this.view) {
+            await this.view.refreshUI(); // Resort
+            
+            // Short delay to allow file system write
+            setTimeout(() => {
+                this.view.openNext();
+            }, 200);
+        }
+    }
+
+    isValidState(state: string): boolean {
+        return ['New', 'Learning', 'Review', 'Relearning'].includes(state);
+    }
+
+    async initFile(file: TFile) {
+        setTimeout(async () => {
+            await this.app.fileManager.processFrontMatter(file, (fm) => {
+                if (!fm['State']) {
+                    fm['State'] = 'New';
+                    fm['anki_hidden_state'] = 'New';
+                    fm['anki_due'] = new Date().toISOString();
+                    fm['Created'] = window.moment().format("YYYY-MM-DD");
+                }
+                if (!fm['tags']) fm['tags'] = [];
+            });
+        }, 100);
+    }
+
+    async activateView() {
+        const { workspace } = this.app;
+        let leaf: WorkspaceLeaf | null = null;
+        const leaves = workspace.getLeavesOfType(VIEW_TYPE_REVIEW);
+        if (leaves.length > 0) leaf = leaves[0];
+        else {
+            leaf = workspace.getRightLeaf(false);
+            await leaf.setViewState({ type: VIEW_TYPE_REVIEW, active: true });
+        }
+        workspace.revealLeaf(leaf);
+    }
+
+    async loadSettings() { this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData()); }
+    async saveSettings() { await this.saveData(this.settings); }
 }
 
-export default class MyPlugin extends Plugin {
-	settings: MyPluginSettings;
-
-	async onload() {
-		await this.loadSettings();
-
-		// This creates an icon in the left ribbon.
-		const ribbonIconEl = this.addRibbonIcon('dice', 'Sample Plugin', (_evt: MouseEvent) => {
-			// Called when the user clicks the icon.
-			new Notice('This is a notice!');
-		});
-		// Perform additional things with the ribbon
-		ribbonIconEl.addClass('my-plugin-ribbon-class');
-
-		// This adds a status bar item to the bottom of the app. Does not work on mobile apps.
-		const statusBarItemEl = this.addStatusBarItem();
-		statusBarItemEl.setText('Status Bar Text');
-
-		// This adds a simple command that can be triggered anywhere
-		this.addCommand({
-			id: 'open-sample-modal-simple',
-			name: 'Open sample modal (simple)',
-			callback: () => {
-				new SampleModal(this.app).open();
-			}
-		});
-		// This adds an editor command that can perform some operation on the current editor instance
-		this.addCommand({
-			id: 'sample-editor-command',
-			name: 'Sample editor command',
-			editorCallback: (editor: Editor, _view: MarkdownView) => {
-				console.log(editor.getSelection());
-				editor.replaceSelection('Sample Editor Command');
-			}
-		});
-		// This adds a complex command that can check whether the current state of the app allows execution of the command
-		this.addCommand({
-			id: 'open-sample-modal-complex',
-			name: 'Open sample modal (complex)',
-			checkCallback: (checking: boolean) => {
-				// Conditions to check
-				const markdownView = this.app.workspace.getActiveViewOfType(MarkdownView);
-				if (markdownView) {
-					// If checking is true, we're simply "checking" if the command can be run.
-					// If checking is false, then we want to actually perform the operation.
-					if (!checking) {
-						new SampleModal(this.app).open();
-					}
-
-					// This command will only show up in Command Palette when the check function returns true
-					return true;
-				}
-			}
-		});
-
-		// This adds a settings tab so the user can configure various aspects of the plugin
-		this.addSettingTab(new SampleSettingTab(this.app, this));
-
-		// If the plugin hooks up any global DOM events (on parts of the app that doesn't belong to this plugin)
-		// Using this function will automatically remove the event listener when this plugin is disabled.
-		this.registerDomEvent(document, 'click', (evt: MouseEvent) => {
-			console.log('click', evt);
-		});
-
-		// When registering intervals, this function will automatically clear the interval when the plugin is disabled.
-		this.registerInterval(window.setInterval(() => console.log('setInterval'), 5 * 60 * 1000));
-	}
-
-	onunload() {
-
-	}
-
-	async loadSettings() {
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
-	}
-
-	async saveSettings() {
-		await this.saveData(this.settings);
-	}
-}
-
-class SampleModal extends Modal {
-	constructor(app: App) {
-		super(app);
-	}
-
-	onOpen() {
-		const {contentEl} = this;
-		contentEl.setText('Woah!');
-	}
-
-	onClose() {
-		const {contentEl} = this;
-		contentEl.empty();
-	}
-}
-
-class SampleSettingTab extends PluginSettingTab {
-	plugin: MyPlugin;
-
-	constructor(app: App, plugin: MyPlugin) {
-		super(app, plugin);
-		this.plugin = plugin;
-	}
-
-	display(): void {
-		const {containerEl} = this;
-
-		containerEl.empty();
-
-    
-
-		new Setting(containerEl)
-			.setName('Setting #1')
-			.setDesc('It\'s a secret')
-			.addText(text => text
-				.setPlaceholder('Enter your secret')
-				.setValue(this.plugin.settings.mySetting)
-				.onChange(async (value) => {
-					this.plugin.settings.mySetting = value;
-					await this.plugin.saveSettings();
-				}));
-	}
+class SpacedRepetitionSettingTab extends PluginSettingTab {
+    plugin: SpacedRepetitionPlugin;
+    constructor(app: App, plugin: SpacedRepetitionPlugin) { super(app, plugin); this.plugin = plugin; }
+    display(): void {
+        const { containerEl } = this;
+        containerEl.empty();
+        new Setting(containerEl)
+            .setName('Target Folder')
+            .addText(text => text.setValue(this.plugin.settings.targetFolder)
+                .onChange(async (value) => {
+                    this.plugin.settings.targetFolder = value.replace(/\/$/, "");
+                    await this.plugin.saveSettings();
+                }));
+    }
 }

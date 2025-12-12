@@ -1,8 +1,82 @@
-/*
+/* --- HIDE TECHNICAL PROPERTIES --- */
+.metadata-property[data-property-key="anki_hidden_state"],
+.metadata-property[data-property-key="anki_interval"],
+.metadata-property[data-property-key="anki_ease"],
+.metadata-property[data-property-key="anki_step"],
+.metadata-property[data-property-key="anki_due"] {
+    display: none !important;
+}
 
-This CSS file will be included with your plugin, and
-available in the app when your plugin is enabled.
+/* --- PLUGIN UI --- */
+.srs-container { padding: 10px; display: flex; flex-direction: column; gap: 15px; }
 
-If your plugin does not need CSS, delete this file.
+.srs-header-controls, .srs-list-header {
+    display: flex; justify-content: space-between; align-items: center;
+    border-bottom: 1px solid var(--background-modifier-border);
+    padding-bottom: 8px;
+}
 
-*/
+/* CALENDAR */
+.srs-calendar { background-color: var(--background-secondary); border-radius: 8px; padding: 10px; }
+.calendar-header { display: flex; justify-content: space-between; margin-bottom: 10px; }
+.calendar-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; text-align: center; }
+.calendar-day-name { font-size: 0.8em; color: var(--text-muted); }
+.calendar-cell {
+    aspect-ratio: 1; display: flex; flex-direction: column; 
+    align-items: center; justify-content: center;
+    border-radius: 4px; font-size: 0.9em; 
+    background-color: var(--background-primary); cursor: pointer;
+    border: 2px solid transparent;
+}
+.calendar-cell:hover { background-color: var(--background-modifier-hover); }
+.calendar-cell.is-today { border-color: var(--text-muted); }
+.calendar-cell.is-selected { border-color: var(--interactive-accent); background-color: var(--interactive-accent-hover); }
+
+/* BADGES */
+.future-badge { font-size: 0.7em; border-radius: 10px; padding: 0 5px; margin-top: 2px; min-width: 16px; }
+.future-badge.has-dues { background-color: var(--interactive-accent); color: white; }
+.future-badge.zero-dues { background-color: var(--background-modifier-border); color: var(--text-muted); }
+
+/* LIST */
+.srs-link-list { list-style: none; padding: 0; margin: 0; }
+.srs-link-list li {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 8px; border-bottom: 1px solid var(--background-modifier-border);
+}
+.srs-link-list li:hover { background-color: var(--background-secondary); }
+
+/* DISABLED STATE */
+.srs-link-list li.is-disabled {
+    opacity: 0.5;
+    background-color: var(--background-primary-alt);
+    cursor: not-allowed;
+}
+
+.srs-link-list li.is-disabled .internal-link {
+    color: var(--text-muted);
+    pointer-events: none; /* Disable click */
+}
+
+/* ITEM LAYOUT */
+.srs-item-left { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
+.srs-item-left .internal-link { font-weight: bold; font-size: 1.05em; }
+
+.srs-meta-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.tag-pill {
+    font-size: 0.7em; background-color: var(--tag-background); 
+    color: var(--tag-color); padding: 1px 6px; border-radius: 10px;
+}
+.meta-date { font-size: 0.75em; color: var(--text-muted); }
+
+.srs-item-right { display: flex; align-items: center; gap: 10px; }
+.state-pill { font-size: 0.7em; padding: 2px 6px; border-radius: 4px; font-weight: bold; }
+.state-pill.is-new { background-color: var(--color-blue); color: white; }
+.state-pill.is-learning { background-color: var(--color-orange); color: white; }
+.state-pill.is-review { background-color: var(--color-green); color: white; }
+.state-pill.is-relearning { background-color: var(--color-red); color: white; }
+
+.time-pill { 
+    font-size: 0.7em; color: var(--text-muted); 
+    background: var(--background-modifier-border);
+    padding: 2px 5px; border-radius: 4px;
+}
